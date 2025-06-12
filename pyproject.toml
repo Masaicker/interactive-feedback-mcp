@@ -8,4 +8,7 @@ dependencies = [
     "fastmcp>=2.0.0",
     "psutil>=7.0.0",
     "pyside6>=6.8.2.1",
+    "google-generativeai>=0.8.0",
+    "requests>=2.31.0",
+    "pillow>=10.0.0",
 ]

@@ -267,7 +267,7 @@ class DragDropImageLabel(QLabel):
         super().__init__(parent)
         self.setAcceptDrops(True)
         self.setFocusPolicy(Qt.StrongFocus)  # 允许获取焦点
-        self.setText("支持拖拽图片到此处或点击后按Ctrl+V粘贴")
+        self.setText("支持拖拽图片到此处或按Ctrl+V粘贴")
         self.setStyleSheet("border: 2px dashed #aaa; padding: 20px;")
         self.setAlignment(Qt.AlignCenter)
         
@@ -287,7 +287,7 @@ class DragDropImageLabel(QLabel):
         """失去焦点时恢复样式"""
         if self.pixmap() is None:  # 只有在没有图片时才改变样式
             self.setStyleSheet("border: 2px dashed #aaa; padding: 20px;")
-            self.setText("支持拖拽图片到此处或点击后按Ctrl+V粘贴")
+            self.setText("支持拖拽图片到此处或按Ctrl+V粘贴")
         super().focusOutEvent(event)
         
     def dragEnterEvent(self, event):
@@ -517,6 +517,32 @@ class FeedbackUI(QMainWindow):
 
         if self.config.get("execute_automatically", False):
             self._run_command()
+
+    def keyPressEvent(self, event):
+        """处理全局键盘事件，特别是Ctrl+V图片粘贴"""
+        # 处理全局Ctrl+V图片粘贴
+        if event.matches(QKeyEvent.Paste):
+            clipboard = QApplication.clipboard()
+            mime_data = clipboard.mimeData()
+            
+            # 如果剪贴板中有图片，直接粘贴到图片预览区域
+            if mime_data.hasImage():
+                try:
+                    image = mime_data.imageData()
+                    if image and not image.isNull():
+                        pixmap = QPixmap.fromImage(image)
+                        buffer = io.BytesIO()
+                        success = pixmap.save(buffer, "PNG")
+                        if success:
+                            image_bytes = buffer.getvalue()
+                            buffer.close()
+                            self._handle_image_paste(image_bytes)
+                            return  # 处理完图片后直接返回
+                except Exception as e:
+                    print(f"处理全局图片粘贴失败: {e}")
+        
+        # 如果不是图片粘贴或处理失败，继续默认处理
+        super().keyPressEvent(event)
 
     def _format_windows_path(self, path: str) -> str:
         if sys.platform == "win32":
@@ -910,7 +936,7 @@ class FeedbackUI(QMainWindow):
         """清除当前图片"""
         self.current_image_data = None
         self.image_preview_label.clear()
-        self.image_preview_label.setText("支持拖拽图片到此处或点击后按Ctrl+V粘贴")
+        self.image_preview_label.setText("支持拖拽图片到此处或按Ctrl+V粘贴")
         self.image_preview_label.setStyleSheet("border: 2px dashed #aaa; padding: 20px;")
         self.clear_image_button.setEnabled(False)
         self._update_gemini_config()  # 更新按钮状态

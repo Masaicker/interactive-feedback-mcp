@@ -267,9 +267,28 @@ class DragDropImageLabel(QLabel):
         super().__init__(parent)
         self.setAcceptDrops(True)
         self.setFocusPolicy(Qt.StrongFocus)  # 允许获取焦点
-        self.setText("支持拖拽图片到此处或使用Ctrl+V粘贴")
+        self.setText("支持拖拽图片到此处或点击后按Ctrl+V粘贴")
         self.setStyleSheet("border: 2px dashed #aaa; padding: 20px;")
         self.setAlignment(Qt.AlignCenter)
+        
+    def mousePressEvent(self, event):
+        """鼠标点击时获取焦点"""
+        self.setFocus()
+        super().mousePressEvent(event)
+        
+    def focusInEvent(self, event):
+        """获得焦点时的视觉反馈"""
+        if self.pixmap() is None:  # 只有在没有图片时才改变样式
+            self.setStyleSheet("border: 2px solid #4CAF50; padding: 20px; background-color: rgba(76, 175, 80, 0.1);")
+            self.setText("支持拖拽图片到此处或按Ctrl+V粘贴（已激活）")
+        super().focusInEvent(event)
+        
+    def focusOutEvent(self, event):
+        """失去焦点时恢复样式"""
+        if self.pixmap() is None:  # 只有在没有图片时才改变样式
+            self.setStyleSheet("border: 2px dashed #aaa; padding: 20px;")
+            self.setText("支持拖拽图片到此处或点击后按Ctrl+V粘贴")
+        super().focusOutEvent(event)
         
     def dragEnterEvent(self, event):
         """拖拽进入事件"""
@@ -857,15 +876,30 @@ class FeedbackUI(QMainWindow):
 
     def _upload_image(self):
         """上传图片文件"""
+        # 从设置中获取上次选择的目录
+        self.settings.beginGroup(self.project_group_name)
+        last_directory = self.settings.value("last_image_directory", "", type=str)
+        self.settings.endGroup()
+        
+        # 如果没有保存的目录，使用用户主目录而不是项目目录
+        if not last_directory or not os.path.exists(last_directory):
+            last_directory = os.path.expanduser("~")
+        
         file_path, _ = QFileDialog.getOpenFileName(
             self, 
             "选择图片文件", 
-            "", 
+            last_directory, 
             "图片文件 (*.png *.jpg *.jpeg *.gif *.bmp *.webp);;所有文件 (*)"
         )
         
         if file_path:
             try:
+                # 保存选择的目录
+                directory = os.path.dirname(file_path)
+                self.settings.beginGroup(self.project_group_name)
+                self.settings.setValue("last_image_directory", directory)
+                self.settings.endGroup()
+                
                 with open(file_path, 'rb') as f:
                     image_data = f.read()
                 self._set_image(image_data)
@@ -876,7 +910,7 @@ class FeedbackUI(QMainWindow):
         """清除当前图片"""
         self.current_image_data = None
         self.image_preview_label.clear()
-        self.image_preview_label.setText("支持拖拽图片到此处或使用Ctrl+V粘贴")
+        self.image_preview_label.setText("支持拖拽图片到此处或点击后按Ctrl+V粘贴")
         self.image_preview_label.setStyleSheet("border: 2px dashed #aaa; padding: 20px;")
         self.clear_image_button.setEnabled(False)
         self._update_gemini_config()  # 更新按钮状态

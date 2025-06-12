@@ -1034,6 +1034,9 @@ class FeedbackUI(QMainWindow):
         # 控制全局粘贴快捷键
         self.paste_shortcut.setEnabled(enabled)
         
+        # 控制分析提示输入框
+        self.analysis_prompt_entry.setEnabled(enabled)
+        
         # 如果禁用，给用户视觉反馈
         if not enabled:
             self.image_preview_label.setStyleSheet("border: 2px dashed #888; padding: 20px; color: #888;")

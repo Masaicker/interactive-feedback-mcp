@@ -21,10 +21,10 @@ import google.generativeai as genai
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QCheckBox, QTextEdit, QGroupBox,
-    QComboBox, QFileDialog, QScrollArea, QFrame
+    QComboBox, QFileDialog, QScrollArea, QFrame, QShortcut
 )
 from PySide6.QtCore import Qt, Signal, QObject, QTimer, QSettings, QThread
-from PySide6.QtGui import QTextCursor, QIcon, QKeyEvent, QFont, QFontDatabase, QPalette, QColor, QPixmap
+from PySide6.QtGui import QTextCursor, QIcon, QKeyEvent, QFont, QFontDatabase, QPalette, QColor, QPixmap, QKeySequence
 
 class FeedbackResult(TypedDict):
     command_logs: str
@@ -492,6 +492,11 @@ class FeedbackUI(QMainWindow):
         loaded_gemini_proxy = self.settings.value("gemini_proxy", "", type=str)
         self.settings.endGroup() # End project-specific group
         
+        # 设置全局图片粘贴快捷键
+        self.paste_shortcut = QShortcut(QKeySequence("Ctrl+V"), self)
+        self.paste_shortcut.setContext(Qt.ApplicationShortcut)  # 应用程序级别的快捷键
+        self.paste_shortcut.activated.connect(self._handle_global_paste)
+        
         self.config: FeedbackConfig = {
             "run_command": loaded_run_command,
             "execute_automatically": loaded_execute_auto,
@@ -518,31 +523,29 @@ class FeedbackUI(QMainWindow):
         if self.config.get("execute_automatically", False):
             self._run_command()
 
-    def keyPressEvent(self, event):
-        """处理全局键盘事件，特别是Ctrl+V图片粘贴"""
-        # 处理全局Ctrl+V图片粘贴
-        if event.matches(QKeyEvent.Paste):
-            clipboard = QApplication.clipboard()
-            mime_data = clipboard.mimeData()
-            
-            # 如果剪贴板中有图片，直接粘贴到图片预览区域
-            if mime_data.hasImage():
-                try:
-                    image = mime_data.imageData()
-                    if image and not image.isNull():
-                        pixmap = QPixmap.fromImage(image)
-                        buffer = io.BytesIO()
-                        success = pixmap.save(buffer, "PNG")
-                        if success:
-                            image_bytes = buffer.getvalue()
-                            buffer.close()
-                            self._handle_image_paste(image_bytes)
-                            return  # 处理完图片后直接返回
-                except Exception as e:
-                    print(f"处理全局图片粘贴失败: {e}")
+    def _handle_global_paste(self):
+        """处理全局Ctrl+V图片粘贴"""
+        clipboard = QApplication.clipboard()
+        mime_data = clipboard.mimeData()
         
-        # 如果不是图片粘贴或处理失败，继续默认处理
-        super().keyPressEvent(event)
+        # 如果剪贴板中有图片，直接粘贴到图片预览区域
+        if mime_data.hasImage():
+            try:
+                image = mime_data.imageData()
+                if image and not image.isNull():
+                    pixmap = QPixmap.fromImage(image)
+                    buffer = io.BytesIO()
+                    success = pixmap.save(buffer, "PNG")
+                    if success:
+                        image_bytes = buffer.getvalue()
+                        buffer.close()
+                        self._handle_image_paste(image_bytes)
+                        print("全局图片粘贴成功！")  # 调试信息
+                        return
+            except Exception as e:
+                print(f"处理全局图片粘贴失败: {e}")
+        else:
+            print("剪贴板中没有图片数据")  # 调试信息
 
     def _format_windows_path(self, path: str) -> str:
         if sys.platform == "win32":

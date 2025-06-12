@@ -528,6 +528,11 @@ class FeedbackUI(QMainWindow):
 
     def _handle_global_paste(self):
         """处理全局Ctrl+V图片粘贴"""
+        # 如果快捷键被禁用（图片识别进行中），直接返回
+        if not self.paste_shortcut.isEnabled():
+            print("图片识别进行中，禁止粘贴操作")
+            return
+            
         clipboard = QApplication.clipboard()
         mime_data = clipboard.mimeData()
         
@@ -1001,6 +1006,9 @@ class FeedbackUI(QMainWindow):
         self.analyze_image_button.setEnabled(False)
         self.analyze_image_button.setText("识别中...")
         
+        # 禁用所有图片相关操作
+        self._set_image_operations_enabled(False)
+        
         # 启动Gemini工作线程
         self.gemini_worker = GeminiWorker(
             api_key=self.config["gemini_api_key"],
@@ -1014,10 +1022,38 @@ class FeedbackUI(QMainWindow):
         self.gemini_worker.error.connect(self._handle_gemini_error)
         self.gemini_worker.start()
     
+    def _set_image_operations_enabled(self, enabled: bool):
+        """控制所有图片相关操作的启用/禁用状态"""
+        # 控制按钮
+        self.upload_image_button.setEnabled(enabled)
+        self.clear_image_button.setEnabled(enabled and self.current_image_data is not None)
+        
+        # 控制拖拽功能
+        self.image_preview_label.setAcceptDrops(enabled)
+        
+        # 控制全局粘贴快捷键
+        self.paste_shortcut.setEnabled(enabled)
+        
+        # 如果禁用，给用户视觉反馈
+        if not enabled:
+            self.image_preview_label.setStyleSheet("border: 2px dashed #888; padding: 20px; color: #888;")
+            if self.current_image_data is None:
+                self.image_preview_label.setText("识别进行中，请稍候...")
+        else:
+            # 恢复正常样式
+            if self.current_image_data is None:
+                self.image_preview_label.setStyleSheet("border: 2px dashed #aaa; padding: 20px;")
+                self.image_preview_label.setText("支持拖拽图片到此处或按Ctrl+V粘贴")
+            else:
+                self.image_preview_label.setStyleSheet("border: 2px solid #4CAF50; padding: 5px;")
+
     def _handle_gemini_result(self, result: str):
         """处理Gemini识别结果"""
         self.analyze_image_button.setText("图片识别")
         self._update_gemini_config()  # 恢复按钮状态
+        
+        # 恢复所有图片相关操作
+        self._set_image_operations_enabled(True)
         
         # 将结果添加到反馈文本框
         current_text = self.feedback_text.toPlainText()
@@ -1038,6 +1074,10 @@ class FeedbackUI(QMainWindow):
         """处理Gemini识别错误"""
         self.analyze_image_button.setText("图片识别")
         self._update_gemini_config()  # 恢复按钮状态
+        
+        # 恢复所有图片相关操作
+        self._set_image_operations_enabled(True)
+        
         self._append_log(f"图片识别失败: {error}\n")
 
     def _submit_feedback(self):

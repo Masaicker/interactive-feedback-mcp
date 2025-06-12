@@ -10,6 +10,7 @@ import subprocess
 import threading
 import hashlib
 from typing import Optional, TypedDict
+from urllib.parse import unquote
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -212,7 +213,25 @@ class LogSignals(QObject):
 class FeedbackUI(QMainWindow):
     def __init__(self, project_directory: str, prompt: str):
         super().__init__()
-        self.project_directory = project_directory
+        
+        # URL decode the project directory path
+        decoded_path = unquote(project_directory)
+        
+        # Convert Unix-style paths to Windows format on Windows
+        if sys.platform == "win32" and decoded_path.startswith('/') and len(decoded_path) > 2:
+            if decoded_path[2] == ':':  # Handle /d:/path format
+                decoded_path = decoded_path[1:]
+            elif decoded_path.startswith('/d%3A/'):  # Handle URL-encoded /d:/path format
+                decoded_path = decoded_path.replace('/d%3A/', 'D:/')
+            elif '%3A' in decoded_path:  # Handle other URL-encoded drive paths
+                decoded_path = decoded_path.replace('%3A', ':').lstrip('/')
+        
+        self.project_directory = os.path.abspath(decoded_path)
+        
+        # Ensure the path exists
+        if not os.path.exists(self.project_directory):
+            raise ValueError(f"项目目录不存在: {self.project_directory}")
+        
         self.prompt = prompt
 
         self.process: Optional[subprocess.Popen] = None
@@ -227,6 +246,11 @@ class FeedbackUI(QMainWindow):
         self.setWindowIcon(QIcon(icon_path))
         self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
         
+        # Set application-wide font size
+        app_font = QApplication.instance().font()
+        app_font.setPointSize(11)  # Increased from default to 11pt
+        QApplication.instance().setFont(app_font)
+        
         self.settings = QSettings("InteractiveFeedbackMCP", "InteractiveFeedbackMCP")
         
         # Load general UI settings for the main window (geometry, state)
@@ -235,10 +259,10 @@ class FeedbackUI(QMainWindow):
         if geometry:
             self.restoreGeometry(geometry)
         else:
-            self.resize(800, 600)
+            self.resize(900, 700)  # Increased size to accommodate larger fonts
             screen = QApplication.primaryScreen().geometry()
-            x = (screen.width() - 800) // 2
-            y = (screen.height() - 600) // 2
+            x = (screen.width() - 900) // 2
+            y = (screen.height() - 700) // 2
             self.move(x, y)
         state = self.settings.value("windowState")
         if state:
@@ -263,9 +287,9 @@ class FeedbackUI(QMainWindow):
         # Set command section visibility AFTER _create_ui has created relevant widgets
         self.command_group.setVisible(command_section_visible)
         if command_section_visible:
-            self.toggle_command_button.setText("Hide Command Section")
+            self.toggle_command_button.setText("隐藏命令区域")
         else:
-            self.toggle_command_button.setText("Show Command Section")
+            self.toggle_command_button.setText("显示命令区域")
 
         set_dark_title_bar(self, True)
 
@@ -287,17 +311,17 @@ class FeedbackUI(QMainWindow):
         layout = QVBoxLayout(central_widget)
 
         # Toggle Command Section Button
-        self.toggle_command_button = QPushButton("Show Command Section")
+        self.toggle_command_button = QPushButton("显示命令区域")
         self.toggle_command_button.clicked.connect(self._toggle_command_section)
         layout.addWidget(self.toggle_command_button)
 
         # Command section
-        self.command_group = QGroupBox("Command")
+        self.command_group = QGroupBox("命令")
         command_layout = QVBoxLayout(self.command_group)
 
         # Working directory label
         formatted_path = self._format_windows_path(self.project_directory)
-        working_dir_label = QLabel(f"Working directory: {formatted_path}")
+        working_dir_label = QLabel(f"工作目录: {formatted_path}")
         command_layout.addWidget(working_dir_label)
 
         # Command input row
@@ -306,7 +330,7 @@ class FeedbackUI(QMainWindow):
         self.command_entry.setText(self.config["run_command"])
         self.command_entry.returnPressed.connect(self._run_command)
         self.command_entry.textChanged.connect(self._update_config)
-        self.run_button = QPushButton("&Run")
+        self.run_button = QPushButton("运行(&R)")
         self.run_button.clicked.connect(self._run_command)
 
         command_input_layout.addWidget(self.command_entry)
@@ -315,11 +339,11 @@ class FeedbackUI(QMainWindow):
 
         # Auto-execute and save config row
         auto_layout = QHBoxLayout()
-        self.auto_check = QCheckBox("Execute automatically on next run")
+        self.auto_check = QCheckBox("下次运行时自动执行")
         self.auto_check.setChecked(self.config.get("execute_automatically", False))
         self.auto_check.stateChanged.connect(self._update_config)
 
-        save_button = QPushButton("&Save Configuration")
+        save_button = QPushButton("保存配置(&S)")
         save_button.clicked.connect(self._save_config)
 
         auto_layout.addWidget(self.auto_check)
@@ -328,21 +352,21 @@ class FeedbackUI(QMainWindow):
         command_layout.addLayout(auto_layout)
 
         # Console section (now part of command_group)
-        console_group = QGroupBox("Console")
+        console_group = QGroupBox("控制台")
         console_layout_internal = QVBoxLayout(console_group)
-        console_group.setMinimumHeight(200)
+        console_group.setMinimumHeight(250)  # Increased height
 
         # Log text area
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         font = QFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
-        font.setPointSize(9)
+        font.setPointSize(12)  # Increased from 9 to 12pt
         self.log_text.setFont(font)
         console_layout_internal.addWidget(self.log_text)
 
         # Clear button
         button_layout = QHBoxLayout()
-        self.clear_button = QPushButton("&Clear")
+        self.clear_button = QPushButton("清除(&C)")
         self.clear_button.clicked.connect(self.clear_logs)
         button_layout.addStretch()
         button_layout.addWidget(self.clear_button)
@@ -354,53 +378,58 @@ class FeedbackUI(QMainWindow):
         layout.addWidget(self.command_group)
 
         # Feedback section with adjusted height
-        self.feedback_group = QGroupBox("Feedback")
+        self.feedback_group = QGroupBox("反馈")
         feedback_layout = QVBoxLayout(self.feedback_group)
 
         # Short description label (from self.prompt)
         self.description_label = QLabel(self.prompt)
         self.description_label.setWordWrap(True)
+        # Increase font size for description
+        desc_font = self.description_label.font()
+        desc_font.setPointSize(12)
+        self.description_label.setFont(desc_font)
         feedback_layout.addWidget(self.description_label)
 
         self.feedback_text = FeedbackTextEdit()
+        # Set larger font for feedback text
+        feedback_font = QFont()
+        feedback_font.setPointSize(12)
+        self.feedback_text.setFont(feedback_font)
+        
         font_metrics = self.feedback_text.fontMetrics()
         row_height = font_metrics.height()
         # Calculate height for 5 lines + some padding for margins
         padding = self.feedback_text.contentsMargins().top() + self.feedback_text.contentsMargins().bottom() + 5 # 5 is extra vertical padding
-        self.feedback_text.setMinimumHeight(5 * row_height + padding)
+        self.feedback_text.setMinimumHeight(6 * row_height + padding)  # Increased to 6 lines
 
-        self.feedback_text.setPlaceholderText("Enter your feedback here (Ctrl+Enter to submit)")
-        submit_button = QPushButton("&Send Feedback (Ctrl+Enter)")
+        self.feedback_text.setPlaceholderText("请在此输入您的反馈 (Ctrl+Enter 提交)")
+        submit_button = QPushButton("发送反馈(&F) (Ctrl+Enter)")
         submit_button.clicked.connect(self._submit_feedback)
 
         feedback_layout.addWidget(self.feedback_text)
         feedback_layout.addWidget(submit_button)
 
         # Set minimum height for feedback_group to accommodate its contents
-        # This will be based on the description label and the 5-line feedback_text
+        # This will be based on the description label and the 6-line feedback_text
         self.feedback_group.setMinimumHeight(self.description_label.sizeHint().height() + self.feedback_text.minimumHeight() + submit_button.sizeHint().height() + feedback_layout.spacing() * 2 + feedback_layout.contentsMargins().top() + feedback_layout.contentsMargins().bottom() + 10) # 10 for extra padding
 
         # Add widgets in a specific order
         layout.addWidget(self.feedback_group)
 
         # Credits/Contact Label
-        contact_label = QLabel('Need to improve? Contact Fábio Ferreira on <a href="https://x.com/fabiomlferreira">X.com</a> or visit <a href="https://dotcursorrules.com/">dotcursorrules.com</a>')
+        contact_label = QLabel('需要改进？请联系 Fábio Ferreira <a href="https://x.com/fabiomlferreira">X.com</a> 或访问 <a href="https://dotcursorrules.com/">dotcursorrules.com</a>')
         contact_label.setOpenExternalLinks(True)
         contact_label.setAlignment(Qt.AlignCenter)
-        # Optionally, make font a bit smaller and less prominent
-        # contact_label_font = contact_label.font()
-        # contact_label_font.setPointSize(contact_label_font.pointSize() - 1)
-        # contact_label.setFont(contact_label_font)
-        contact_label.setStyleSheet("font-size: 9pt; color: #cccccc;") # Light gray for dark theme
+        contact_label.setStyleSheet("font-size: 11pt; color: #cccccc;") # Increased from 9pt to 11pt
         layout.addWidget(contact_label)
 
     def _toggle_command_section(self):
         is_visible = self.command_group.isVisible()
         self.command_group.setVisible(not is_visible)
         if not is_visible:
-            self.toggle_command_button.setText("Hide Command Section")
+            self.toggle_command_button.setText("隐藏命令区域")
         else:
-            self.toggle_command_button.setText("Show Command Section")
+            self.toggle_command_button.setText("显示命令区域")
         
         # Immediately save the visibility state for this project
         self.settings.beginGroup(self.project_group_name)
@@ -411,7 +440,7 @@ class FeedbackUI(QMainWindow):
         new_height = self.centralWidget().sizeHint().height()
         if self.command_group.isVisible() and self.command_group.layout().sizeHint().height() > 0 :
              # if command group became visible and has content, ensure enough height
-             min_content_height = self.command_group.layout().sizeHint().height() + self.feedback_group.minimumHeight() + self.toggle_command_button.height() + layout().spacing() * 2
+             min_content_height = self.command_group.layout().sizeHint().height() + self.feedback_group.minimumHeight() + self.toggle_command_button.height() + self.centralWidget().layout().spacing() * 2
              new_height = max(new_height, min_content_height)
 
         current_width = self.width()
@@ -432,8 +461,8 @@ class FeedbackUI(QMainWindow):
         if self.process and self.process.poll() is not None:
             # Process has terminated
             exit_code = self.process.poll()
-            self._append_log(f"\nProcess exited with code {exit_code}\n")
-            self.run_button.setText("&Run")
+            self._append_log(f"\n进程已退出，退出代码: {exit_code}\n")
+            self.run_button.setText("运行(&R)")
             self.process = None
             self.activateWindow()
             self.feedback_text.setFocus()
@@ -442,7 +471,7 @@ class FeedbackUI(QMainWindow):
         if self.process:
             kill_tree(self.process)
             self.process = None
-            self.run_button.setText("&Run")
+            self.run_button.setText("运行(&R)")
             return
 
         # Clear the log buffer but keep UI logs visible
@@ -450,11 +479,11 @@ class FeedbackUI(QMainWindow):
 
         command = self.command_entry.text()
         if not command:
-            self._append_log("Please enter a command to run\n")
+            self._append_log("请输入要运行的命令\n")
             return
 
         self._append_log(f"$ {command}\n")
-        self.run_button.setText("Sto&p")
+        self.run_button.setText("停止(&T)")
 
         try:
             self.process = subprocess.Popen(
@@ -493,13 +522,20 @@ class FeedbackUI(QMainWindow):
             self.status_timer.start(100)  # Check every 100ms
 
         except Exception as e:
-            self._append_log(f"Error running command: {str(e)}\n")
-            self.run_button.setText("&Run")
+            self._append_log(f"运行命令时出错: {str(e)}\n")
+            self.run_button.setText("运行(&R)")
 
     def _submit_feedback(self):
+        feedback_content = self.feedback_text.toPlainText().strip()
+        # 在反馈内容末尾自动添加提醒文字
+        if feedback_content:
+            feedback_content += "\n执行完前面的内容后，请记得调用interactive_feedback。"
+        else:
+            feedback_content = "执行完前面的内容后，请记得调用interactive_feedback。"
+        
         self.feedback_result = FeedbackResult(
             logs="".join(self.log_buffer),
-            interactive_feedback=self.feedback_text.toPlainText().strip(),
+            interactive_feedback=feedback_content,
         )
         self.close()
 
@@ -513,7 +549,7 @@ class FeedbackUI(QMainWindow):
         self.settings.setValue("run_command", self.config["run_command"])
         self.settings.setValue("execute_automatically", self.config["execute_automatically"])
         self.settings.endGroup()
-        self._append_log("Configuration saved for this project.\n")
+        self._append_log("该项目的配置已保存。\n")
 
     def closeEvent(self, event):
         # Save general UI settings for the main window (geometry, state)
@@ -568,14 +604,14 @@ def feedback_ui(project_directory: str, prompt: str, output_file: Optional[str] 
     return result
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run the feedback UI")
-    parser.add_argument("--project-directory", default=os.getcwd(), help="The project directory to run the command in")
-    parser.add_argument("--prompt", default="I implemented the changes you requested.", help="The prompt to show to the user")
-    parser.add_argument("--output-file", help="Path to save the feedback result as JSON")
+    parser = argparse.ArgumentParser(description="运行反馈界面")
+    parser.add_argument("--project-directory", default=os.getcwd(), help="运行命令的项目目录")
+    parser.add_argument("--prompt", default="我已实现您请求的更改。", help="向用户显示的提示信息")
+    parser.add_argument("--output-file", help="将反馈结果保存为JSON文件的路径")
     args = parser.parse_args()
 
     result = feedback_ui(args.project_directory, args.prompt, args.output_file)
     if result:
-        print(f"\nLogs collected: \n{result['logs']}")
-        print(f"\nFeedback received:\n{result['interactive_feedback']}")
+        print(f"\n收集的日志: \n{result['logs']}")
+        print(f"\n收到的反馈:\n{result['interactive_feedback']}")
     sys.exit(0)

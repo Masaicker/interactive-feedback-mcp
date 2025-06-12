@@ -206,6 +206,17 @@ class FeedbackTextEdit(QTextEdit):
                 parent._submit_feedback()
         else:
             super().keyPressEvent(event)
+    
+    def insertFromMimeData(self, source):
+        # 只插入纯文本，忽略其他格式
+        if source.hasText():
+            plain_text = source.text()
+            # 插入纯文本到当前光标位置
+            cursor = self.textCursor()
+            cursor.insertText(plain_text)
+        else:
+            # 如果没有文本数据，使用默认行为
+            super().insertFromMimeData(source)
 
 class LogSignals(QObject):
     append_log = Signal(str)

@@ -9,15 +9,22 @@ import argparse
 import subprocess
 import threading
 import hashlib
+import base64
+import io
 from typing import Optional, TypedDict
 from urllib.parse import unquote
 
+import requests
+from PIL import Image
+import google.generativeai as genai
+
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QLineEdit, QPushButton, QCheckBox, QTextEdit, QGroupBox
+    QLabel, QLineEdit, QPushButton, QCheckBox, QTextEdit, QGroupBox,
+    QComboBox, QFileDialog, QScrollArea, QFrame
 )
-from PySide6.QtCore import Qt, Signal, QObject, QTimer, QSettings
-from PySide6.QtGui import QTextCursor, QIcon, QKeyEvent, QFont, QFontDatabase, QPalette, QColor
+from PySide6.QtCore import Qt, Signal, QObject, QTimer, QSettings, QThread
+from PySide6.QtGui import QTextCursor, QIcon, QKeyEvent, QFont, QFontDatabase, QPalette, QColor, QPixmap
 
 class FeedbackResult(TypedDict):
     command_logs: str
@@ -26,6 +33,9 @@ class FeedbackResult(TypedDict):
 class FeedbackConfig(TypedDict):
     run_command: str
     execute_automatically: bool
+    gemini_api_key: str
+    gemini_model: str
+    gemini_proxy: str
 
 def set_dark_title_bar(widget: QWidget, dark_title_bar: bool) -> None:
     # Ensure we're on Windows
@@ -193,6 +203,8 @@ def get_user_environment() -> dict[str, str]:
         CloseHandle(token)
 
 class FeedbackTextEdit(QTextEdit):
+    image_pasted = Signal(bytes)  # 新增信号，用于通知图片粘贴
+    
     def __init__(self, parent=None):
         super().__init__(parent)
 
@@ -208,6 +220,40 @@ class FeedbackTextEdit(QTextEdit):
             super().keyPressEvent(event)
     
     def insertFromMimeData(self, source):
+        # 检查是否有图片数据
+        if source.hasImage():
+            try:
+                # 获取图片数据
+                image = source.imageData()
+                if image and not image.isNull():
+                    # 转换为字节数据
+                    pixmap = QPixmap.fromImage(image)
+                    buffer = io.BytesIO()
+                    # 使用更安全的保存方法
+                    success = pixmap.save(buffer, "PNG")
+                    if success:
+                        image_bytes = buffer.getvalue()
+                        buffer.close()
+                        
+                        # 发送信号通知有图片粘贴
+                        self.image_pasted.emit(image_bytes)
+                        
+                        # 在文本框中插入提示
+                        cursor = self.textCursor()
+                        cursor.insertText("[图片已粘贴] ")
+                        return
+                    else:
+                        # 如果保存失败，插入错误提示
+                        cursor = self.textCursor()
+                        cursor.insertText("[图片处理失败] ")
+                        return
+            except Exception as e:
+                # 捕获所有异常，避免崩溃
+                print(f"处理粘贴图片时出错: {e}")
+                cursor = self.textCursor()
+                cursor.insertText("[图片处理失败] ")
+                return
+        
         # 只插入纯文本，忽略其他格式
         if source.hasText():
             plain_text = source.text()
@@ -220,6 +266,64 @@ class FeedbackTextEdit(QTextEdit):
 
 class LogSignals(QObject):
     append_log = Signal(str)
+
+class GeminiWorker(QThread):
+    finished = Signal(str)  # 返回分析结果
+    error = Signal(str)     # 返回错误信息
+    
+    def __init__(self, api_key: str, model: str, proxy: str, text: str, image_data: bytes = None):
+        super().__init__()
+        self.api_key = api_key
+        self.model = model
+        self.proxy = proxy
+        self.text = text
+        self.image_data = image_data
+    
+    def run(self):
+        try:
+            # 设置代理（仅对Gemini API）
+            if self.proxy:
+                os.environ['HTTP_PROXY'] = self.proxy
+                os.environ['HTTPS_PROXY'] = self.proxy
+            
+            # 配置Gemini API
+            genai.configure(api_key=self.api_key)
+            
+            # 获取模型
+            model = genai.GenerativeModel(self.model)
+            
+            # 构建请求内容
+            contents = []
+            
+            # 添加文本
+            if self.text:
+                # 确保提示包含中文返回要求
+                if "中文" not in self.text:
+                    enhanced_text = f"{self.text} 请用中文回答。"
+                else:
+                    enhanced_text = self.text
+                contents.append(enhanced_text)
+            
+            # 添加图片（如果有）
+            if self.image_data:
+                # 将图片数据转换为PIL Image
+                image = Image.open(io.BytesIO(self.image_data))
+                contents.append(image)
+            
+            # 调用Gemini API
+            response = model.generate_content(contents)
+            
+            self.finished.emit(response.text)
+            
+        except Exception as e:
+            self.error.emit(f"Gemini API调用失败: {str(e)}")
+        finally:
+            # 清理代理设置
+            if self.proxy:
+                if 'HTTP_PROXY' in os.environ:
+                    del os.environ['HTTP_PROXY']
+                if 'HTTPS_PROXY' in os.environ:
+                    del os.environ['HTTPS_PROXY']
 
 class FeedbackUI(QMainWindow):
     def __init__(self, project_directory: str, prompt: str):
@@ -286,12 +390,22 @@ class FeedbackUI(QMainWindow):
         loaded_run_command = self.settings.value("run_command", "", type=str)
         loaded_execute_auto = self.settings.value("execute_automatically", False, type=bool)
         command_section_visible = self.settings.value("commandSectionVisible", False, type=bool)
+        loaded_gemini_api_key = self.settings.value("gemini_api_key", "", type=str)
+        loaded_gemini_model = self.settings.value("gemini_model", "gemini-1.5-flash-latest", type=str)
+        loaded_gemini_proxy = self.settings.value("gemini_proxy", "", type=str)
         self.settings.endGroup() # End project-specific group
         
         self.config: FeedbackConfig = {
             "run_command": loaded_run_command,
-            "execute_automatically": loaded_execute_auto
+            "execute_automatically": loaded_execute_auto,
+            "gemini_api_key": loaded_gemini_api_key,
+            "gemini_model": loaded_gemini_model,
+            "gemini_proxy": loaded_gemini_proxy
         }
+        
+        # 图片数据存储
+        self.current_image_data = None
+        self.gemini_worker = None
 
         self._create_ui() # self.config is used here to set initial values
 
@@ -401,6 +515,104 @@ class FeedbackUI(QMainWindow):
         self.description_label.setFont(desc_font)
         feedback_layout.addWidget(self.description_label)
 
+        # 图片识别配置区域
+        image_config_group = QGroupBox("图片识别配置")
+        image_config_layout = QVBoxLayout(image_config_group)
+        
+        # API Key 输入
+        api_key_layout = QHBoxLayout()
+        api_key_label = QLabel("Gemini API Key:")
+        self.api_key_entry = QLineEdit()
+        self.api_key_entry.setEchoMode(QLineEdit.Password)
+        self.api_key_entry.setText(self.config["gemini_api_key"])
+        self.api_key_entry.textChanged.connect(self._update_gemini_config)
+        self.api_key_entry.setPlaceholderText("请输入您的Gemini API Key")
+        api_key_layout.addWidget(api_key_label)
+        api_key_layout.addWidget(self.api_key_entry)
+        image_config_layout.addLayout(api_key_layout)
+        
+        # 模型选择和代理设置
+        model_proxy_layout = QHBoxLayout()
+        
+        # 模型选择
+        model_label = QLabel("模型:")
+        self.model_combo = QComboBox()
+        self.model_combo.addItems([
+            "gemini-2.5-flash-preview-05-20",
+            "gemini-2.5-pro-preview-05-06",
+            "gemini-2.0-flash-exp",
+            "gemini-2.0-flash-thinking-exp",
+            "gemini-2.0-flash-thinking-exp-1219",
+            "gemini-1.5-pro-latest",
+            "gemini-1.5-flash-latest",
+            "gemini-1.5-pro-exp-0827",
+            "gemini-1.5-flash-exp-0827",
+            "gemini-1.5-flash-8b-exp-0924",
+            "gemini-pro"
+        ])
+        self.model_combo.setCurrentText(self.config["gemini_model"])
+        self.model_combo.currentTextChanged.connect(self._update_gemini_config)
+        
+        # 代理设置
+        proxy_label = QLabel("代理:")
+        self.proxy_entry = QLineEdit()
+        self.proxy_entry.setText(self.config["gemini_proxy"])
+        self.proxy_entry.textChanged.connect(self._update_gemini_config)
+        self.proxy_entry.setPlaceholderText("http://proxy:port (可选)")
+        
+        model_proxy_layout.addWidget(model_label)
+        model_proxy_layout.addWidget(self.model_combo)
+        model_proxy_layout.addWidget(proxy_label)
+        model_proxy_layout.addWidget(self.proxy_entry)
+        image_config_layout.addLayout(model_proxy_layout)
+        
+        feedback_layout.addWidget(image_config_group)
+        
+        # 图片区域
+        image_group = QGroupBox("图片")
+        image_layout = QVBoxLayout(image_group)
+        
+        # 图片操作按钮
+        image_buttons_layout = QHBoxLayout()
+        self.upload_image_button = QPushButton("上传图片")
+        self.upload_image_button.clicked.connect(self._upload_image)
+        self.clear_image_button = QPushButton("清除图片")
+        self.clear_image_button.clicked.connect(self._clear_image)
+        self.clear_image_button.setEnabled(False)
+        
+        image_buttons_layout.addWidget(self.upload_image_button)
+        image_buttons_layout.addWidget(self.clear_image_button)
+        image_buttons_layout.addStretch()
+        image_layout.addLayout(image_buttons_layout)
+        
+        # 图片预览区域
+        self.image_preview_scroll = QScrollArea()
+        self.image_preview_scroll.setMaximumHeight(200)
+        self.image_preview_scroll.setWidgetResizable(True)
+        self.image_preview_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.image_preview_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        
+        self.image_preview_label = QLabel("支持拖拽图片到此处或使用Ctrl+V粘贴")
+        self.image_preview_label.setAlignment(Qt.AlignCenter)
+        self.image_preview_label.setStyleSheet("border: 2px dashed #aaa; padding: 20px;")
+        self.image_preview_label.setAcceptDrops(True)
+        
+        self.image_preview_scroll.setWidget(self.image_preview_label)
+        image_layout.addWidget(self.image_preview_scroll)
+        
+        # 图片分析提示输入框
+        analysis_prompt_layout = QHBoxLayout()
+        analysis_prompt_label = QLabel("分析提示:")
+        self.analysis_prompt_entry = QLineEdit()
+        self.analysis_prompt_entry.setPlaceholderText("请输入您希望AI分析图片的具体要求，例如：请详细描述这张图片的内容")
+        self.analysis_prompt_entry.setText("请用中文详细分析这张图片的内容，包括图片中的对象、文字、场景等信息。")
+        
+        analysis_prompt_layout.addWidget(analysis_prompt_label)
+        analysis_prompt_layout.addWidget(self.analysis_prompt_entry)
+        image_layout.addLayout(analysis_prompt_layout)
+        
+        feedback_layout.addWidget(image_group)
+
         self.feedback_text = FeedbackTextEdit()
         # Set larger font for feedback text
         feedback_font = QFont()
@@ -414,11 +626,25 @@ class FeedbackUI(QMainWindow):
         self.feedback_text.setMinimumHeight(6 * row_height + padding)  # Increased to 6 lines
 
         self.feedback_text.setPlaceholderText("请在此输入您的反馈 (Ctrl+Enter 提交)")
+        
+        # 连接图片粘贴信号
+        self.feedback_text.image_pasted.connect(self._handle_image_paste)
+        
+        # 按钮布局
+        button_layout = QHBoxLayout()
         submit_button = QPushButton("发送反馈(&F) (Ctrl+Enter)")
         submit_button.clicked.connect(self._submit_feedback)
+        
+        self.analyze_image_button = QPushButton("图片识别")
+        self.analyze_image_button.clicked.connect(self._analyze_image)
+        self.analyze_image_button.setEnabled(False)  # 初始状态禁用
+        
+        button_layout.addWidget(submit_button)
+        button_layout.addWidget(self.analyze_image_button)
+        button_layout.addStretch()
 
         feedback_layout.addWidget(self.feedback_text)
-        feedback_layout.addWidget(submit_button)
+        feedback_layout.addLayout(button_layout)
 
         # Set minimum height for feedback_group to accommodate its contents
         # This will be based on the description label and the 6-line feedback_text
@@ -460,6 +686,24 @@ class FeedbackUI(QMainWindow):
     def _update_config(self):
         self.config["run_command"] = self.command_entry.text()
         self.config["execute_automatically"] = self.auto_check.isChecked()
+    
+    def _update_gemini_config(self):
+        """更新Gemini配置"""
+        self.config["gemini_api_key"] = self.api_key_entry.text()
+        self.config["gemini_model"] = self.model_combo.currentText()
+        self.config["gemini_proxy"] = self.proxy_entry.text()
+        
+        # 立即保存配置到持久化存储
+        self.settings.beginGroup(self.project_group_name)
+        self.settings.setValue("gemini_api_key", self.config["gemini_api_key"])
+        self.settings.setValue("gemini_model", self.config["gemini_model"])
+        self.settings.setValue("gemini_proxy", self.config["gemini_proxy"])
+        self.settings.endGroup()
+        
+        # 检查配置是否完整，决定是否启用图片识别按钮
+        has_api_key = bool(self.config["gemini_api_key"].strip())
+        has_image = self.current_image_data is not None
+        self.analyze_image_button.setEnabled(has_api_key and has_image)
 
     def _append_log(self, text: str):
         self.log_buffer.append(text)
@@ -536,6 +780,120 @@ class FeedbackUI(QMainWindow):
             self._append_log(f"运行命令时出错: {str(e)}\n")
             self.run_button.setText("运行(&R)")
 
+    def _upload_image(self):
+        """上传图片文件"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, 
+            "选择图片文件", 
+            "", 
+            "图片文件 (*.png *.jpg *.jpeg *.gif *.bmp *.webp);;所有文件 (*)"
+        )
+        
+        if file_path:
+            try:
+                with open(file_path, 'rb') as f:
+                    image_data = f.read()
+                self._set_image(image_data)
+            except Exception as e:
+                self._append_log(f"加载图片失败: {str(e)}\n")
+    
+    def _clear_image(self):
+        """清除当前图片"""
+        self.current_image_data = None
+        self.image_preview_label.clear()
+        self.image_preview_label.setText("支持拖拽图片到此处或使用Ctrl+V粘贴")
+        self.image_preview_label.setStyleSheet("border: 2px dashed #aaa; padding: 20px;")
+        self.clear_image_button.setEnabled(False)
+        self._update_gemini_config()  # 更新按钮状态
+    
+    def _handle_image_paste(self, image_data: bytes):
+        """处理粘贴的图片"""
+        self._set_image(image_data)
+    
+    def _set_image(self, image_data: bytes):
+        """设置图片数据并更新预览"""
+        try:
+            self.current_image_data = image_data
+            
+            # 创建图片预览
+            pixmap = QPixmap()
+            pixmap.loadFromData(image_data)
+            
+            # 缩放图片以适应预览区域
+            if not pixmap.isNull():
+                scaled_pixmap = pixmap.scaled(
+                    300, 150, 
+                    Qt.KeepAspectRatio, 
+                    Qt.SmoothTransformation
+                )
+                self.image_preview_label.setPixmap(scaled_pixmap)
+                self.image_preview_label.setStyleSheet("border: 2px solid #4CAF50; padding: 5px;")
+                self.clear_image_button.setEnabled(True)
+                self._update_gemini_config()  # 更新按钮状态
+            else:
+                raise ValueError("无效的图片数据")
+                
+        except Exception as e:
+            self._append_log(f"设置图片失败: {str(e)}\n")
+    
+    def _analyze_image(self):
+        """使用Gemini分析图片"""
+        if not self.current_image_data:
+            self._append_log("请先上传或粘贴图片\n")
+            return
+            
+        if not self.config["gemini_api_key"].strip():
+            self._append_log("请先设置Gemini API Key\n")
+            return
+        
+        # 获取分析提示内容
+        text_content = self.analysis_prompt_entry.text().strip()
+        if not text_content:
+            text_content = "请用中文详细分析这张图片的内容，包括图片中的对象、文字、场景等信息。"
+        
+        # 禁用按钮并显示处理状态
+        self.analyze_image_button.setEnabled(False)
+        self.analyze_image_button.setText("识别中...")
+        
+        # 启动Gemini工作线程
+        self.gemini_worker = GeminiWorker(
+            api_key=self.config["gemini_api_key"],
+            model=self.config["gemini_model"],
+            proxy=self.config["gemini_proxy"],
+            text=text_content,
+            image_data=self.current_image_data
+        )
+        
+        self.gemini_worker.finished.connect(self._handle_gemini_result)
+        self.gemini_worker.error.connect(self._handle_gemini_error)
+        self.gemini_worker.start()
+    
+    def _handle_gemini_result(self, result: str):
+        """处理Gemini识别结果"""
+        self.analyze_image_button.setText("图片识别")
+        self._update_gemini_config()  # 恢复按钮状态
+        
+        # 将结果添加到反馈文本框
+        current_text = self.feedback_text.toPlainText()
+        if current_text and not current_text.endswith('\n'):
+            current_text += '\n'
+        
+        new_text = current_text + "\n=== Gemini图片识别结果 ===\n" + result + "\n"
+        self.feedback_text.setPlainText(new_text)
+        
+        # 移动光标到末尾
+        cursor = self.feedback_text.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        self.feedback_text.setTextCursor(cursor)
+        
+        self._append_log("图片识别完成\n")
+    
+    def _handle_gemini_error(self, error: str):
+        """处理Gemini识别错误"""
+        self.analyze_image_button.setText("图片识别")
+        self._update_gemini_config()  # 恢复按钮状态
+        self._append_log(f"图片识别失败: {error}\n")
+
     def _submit_feedback(self):
         feedback_content = self.feedback_text.toPlainText().strip()
         # 在反馈内容末尾自动添加提醒文字
@@ -559,6 +917,9 @@ class FeedbackUI(QMainWindow):
         self.settings.beginGroup(self.project_group_name)
         self.settings.setValue("run_command", self.config["run_command"])
         self.settings.setValue("execute_automatically", self.config["execute_automatically"])
+        self.settings.setValue("gemini_api_key", self.config["gemini_api_key"])
+        self.settings.setValue("gemini_model", self.config["gemini_model"])
+        self.settings.setValue("gemini_proxy", self.config["gemini_proxy"])
         self.settings.endGroup()
         self._append_log("该项目的配置已保存。\n")
 

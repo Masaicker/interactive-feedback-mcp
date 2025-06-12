@@ -238,20 +238,15 @@ class FeedbackTextEdit(QTextEdit):
                         # 发送信号通知有图片粘贴
                         self.image_pasted.emit(image_bytes)
                         
-                        # 在文本框中插入提示
-                        cursor = self.textCursor()
-                        cursor.insertText("[图片已粘贴] ")
+                        # 静默处理，不显示提示信息
                         return
                     else:
-                        # 如果保存失败，插入错误提示
-                        cursor = self.textCursor()
-                        cursor.insertText("[图片处理失败] ")
+                        # 如果保存失败，静默处理
+                        print("图片保存失败")
                         return
             except Exception as e:
                 # 捕获所有异常，避免崩溃
                 print(f"处理粘贴图片时出错: {e}")
-                cursor = self.textCursor()
-                cursor.insertText("[图片处理失败] ")
                 return
         
         # 只插入纯文本，忽略其他格式
@@ -263,6 +258,94 @@ class FeedbackTextEdit(QTextEdit):
         else:
             # 如果没有文本数据，使用默认行为
             super().insertFromMimeData(source)
+
+class DragDropImageLabel(QLabel):
+    """支持拖拽和粘贴的图片预览标签"""
+    image_dropped = Signal(bytes)  # 新增信号，用于通知图片被拖拽进来
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+        self.setFocusPolicy(Qt.StrongFocus)  # 允许获取焦点
+        self.setText("支持拖拽图片到此处或使用Ctrl+V粘贴")
+        self.setStyleSheet("border: 2px dashed #aaa; padding: 20px;")
+        self.setAlignment(Qt.AlignCenter)
+        
+    def dragEnterEvent(self, event):
+        """拖拽进入事件"""
+        if event.mimeData().hasImage() or event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+            
+    def dragMoveEvent(self, event):
+        """拖拽移动事件"""
+        if event.mimeData().hasImage() or event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+            
+    def dropEvent(self, event):
+        """拖拽放下事件"""
+        mime_data = event.mimeData()
+        
+        try:
+            # 处理图片数据
+            if mime_data.hasImage():
+                image = mime_data.imageData()
+                if image and not image.isNull():
+                    pixmap = QPixmap.fromImage(image)
+                    buffer = io.BytesIO()
+                    success = pixmap.save(buffer, "PNG")
+                    if success:
+                        image_bytes = buffer.getvalue()
+                        buffer.close()
+                        self.image_dropped.emit(image_bytes)
+                        event.acceptProposedAction()
+                        return
+                        
+            # 处理文件URL
+            elif mime_data.hasUrls():
+                urls = mime_data.urls()
+                if urls:
+                    file_path = urls[0].toLocalFile()
+                    if file_path and file_path.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp')):
+                        try:
+                            with open(file_path, 'rb') as f:
+                                image_data = f.read()
+                            self.image_dropped.emit(image_data)
+                            event.acceptProposedAction()
+                            return
+                        except Exception as e:
+                            print(f"读取拖拽文件失败: {e}")
+                            
+        except Exception as e:
+            print(f"处理拖拽事件失败: {e}")
+            
+        event.ignore()
+        
+    def keyPressEvent(self, event):
+        """处理键盘事件，特别是Ctrl+V"""
+        if event.matches(QKeyEvent.Paste):
+            clipboard = QApplication.clipboard()
+            mime_data = clipboard.mimeData()
+            
+            if mime_data.hasImage():
+                try:
+                    image = mime_data.imageData()
+                    if image and not image.isNull():
+                        pixmap = QPixmap.fromImage(image)
+                        buffer = io.BytesIO()
+                        success = pixmap.save(buffer, "PNG")
+                        if success:
+                            image_bytes = buffer.getvalue()
+                            buffer.close()
+                            self.image_dropped.emit(image_bytes)
+                            return
+                except Exception as e:
+                    print(f"处理粘贴图片失败: {e}")
+                    
+        super().keyPressEvent(event)
 
 class LogSignals(QObject):
     append_log = Signal(str)
@@ -297,12 +380,7 @@ class GeminiWorker(QThread):
             
             # 添加文本
             if self.text:
-                # 确保提示包含中文返回要求
-                if "中文" not in self.text:
-                    enhanced_text = f"{self.text} 请用中文回答。"
-                else:
-                    enhanced_text = self.text
-                contents.append(enhanced_text)
+                contents.append(self.text)
             
             # 添加图片（如果有）
             if self.image_data:
@@ -497,25 +575,7 @@ class FeedbackUI(QMainWindow):
         button_layout.addWidget(self.clear_button)
         console_layout_internal.addLayout(button_layout)
         
-        command_layout.addWidget(console_group)
-
-        self.command_group.setVisible(False) 
-        layout.addWidget(self.command_group)
-
-        # Feedback section with adjusted height
-        self.feedback_group = QGroupBox("反馈")
-        feedback_layout = QVBoxLayout(self.feedback_group)
-
-        # Short description label (from self.prompt)
-        self.description_label = QLabel(self.prompt)
-        self.description_label.setWordWrap(True)
-        # Increase font size for description
-        desc_font = self.description_label.font()
-        desc_font.setPointSize(12)
-        self.description_label.setFont(desc_font)
-        feedback_layout.addWidget(self.description_label)
-
-        # 图片识别配置区域
+        # 图片识别配置区域（移到命令区域）
         image_config_group = QGroupBox("图片识别配置")
         image_config_layout = QVBoxLayout(image_config_group)
         
@@ -566,7 +626,24 @@ class FeedbackUI(QMainWindow):
         model_proxy_layout.addWidget(self.proxy_entry)
         image_config_layout.addLayout(model_proxy_layout)
         
-        feedback_layout.addWidget(image_config_group)
+        command_layout.addWidget(image_config_group)
+        command_layout.addWidget(console_group)
+
+        self.command_group.setVisible(False) 
+        layout.addWidget(self.command_group)
+
+        # Feedback section with adjusted height
+        self.feedback_group = QGroupBox("反馈")
+        feedback_layout = QVBoxLayout(self.feedback_group)
+
+        # Short description label (from self.prompt)
+        self.description_label = QLabel(self.prompt)
+        self.description_label.setWordWrap(True)
+        # Increase font size for description
+        desc_font = self.description_label.font()
+        desc_font.setPointSize(12)
+        self.description_label.setFont(desc_font)
+        feedback_layout.addWidget(self.description_label)
         
         # 图片区域
         image_group = QGroupBox("图片")
@@ -580,9 +657,14 @@ class FeedbackUI(QMainWindow):
         self.clear_image_button.clicked.connect(self._clear_image)
         self.clear_image_button.setEnabled(False)
         
+        self.analyze_image_button = QPushButton("图片识别")
+        self.analyze_image_button.clicked.connect(self._analyze_image)
+        self.analyze_image_button.setEnabled(False)  # 初始状态禁用
+        
         image_buttons_layout.addWidget(self.upload_image_button)
         image_buttons_layout.addWidget(self.clear_image_button)
         image_buttons_layout.addStretch()
+        image_buttons_layout.addWidget(self.analyze_image_button)
         image_layout.addLayout(image_buttons_layout)
         
         # 图片预览区域
@@ -592,10 +674,8 @@ class FeedbackUI(QMainWindow):
         self.image_preview_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.image_preview_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         
-        self.image_preview_label = QLabel("支持拖拽图片到此处或使用Ctrl+V粘贴")
-        self.image_preview_label.setAlignment(Qt.AlignCenter)
-        self.image_preview_label.setStyleSheet("border: 2px dashed #aaa; padding: 20px;")
-        self.image_preview_label.setAcceptDrops(True)
+        self.image_preview_label = DragDropImageLabel()
+        self.image_preview_label.image_dropped.connect(self._handle_image_paste)
         
         self.image_preview_scroll.setWidget(self.image_preview_label)
         image_layout.addWidget(self.image_preview_scroll)
@@ -605,7 +685,7 @@ class FeedbackUI(QMainWindow):
         analysis_prompt_label = QLabel("分析提示:")
         self.analysis_prompt_entry = QLineEdit()
         self.analysis_prompt_entry.setPlaceholderText("请输入您希望AI分析图片的具体要求，例如：请详细描述这张图片的内容")
-        self.analysis_prompt_entry.setText("请用中文详细分析这张图片的内容，包括图片中的对象、文字、场景等信息。")
+        # 默认为空，点击时会自动使用默认提示
         
         analysis_prompt_layout.addWidget(analysis_prompt_label)
         analysis_prompt_layout.addWidget(self.analysis_prompt_entry)
@@ -635,12 +715,7 @@ class FeedbackUI(QMainWindow):
         submit_button = QPushButton("发送反馈(&F) (Ctrl+Enter)")
         submit_button.clicked.connect(self._submit_feedback)
         
-        self.analyze_image_button = QPushButton("图片识别")
-        self.analyze_image_button.clicked.connect(self._analyze_image)
-        self.analyze_image_button.setEnabled(False)  # 初始状态禁用
-        
         button_layout.addWidget(submit_button)
-        button_layout.addWidget(self.analyze_image_button)
         button_layout.addStretch()
 
         feedback_layout.addWidget(self.feedback_text)
@@ -849,7 +924,11 @@ class FeedbackUI(QMainWindow):
         # 获取分析提示内容
         text_content = self.analysis_prompt_entry.text().strip()
         if not text_content:
-            text_content = "请用中文详细分析这张图片的内容，包括图片中的对象、文字、场景等信息。"
+            text_content = "请详细分析这张图片的内容，包括图片中的对象、文字、场景等信息。"
+        
+        # 总是在提示中加上"请用中文回复"
+        if "请用中文" not in text_content:
+            text_content = f"{text_content} 请用中文回复。"
         
         # 禁用按钮并显示处理状态
         self.analyze_image_button.setEnabled(False)

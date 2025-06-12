@@ -21,10 +21,10 @@ import google.generativeai as genai
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QCheckBox, QTextEdit, QGroupBox,
-    QComboBox, QFileDialog, QScrollArea, QFrame, QShortcut
+    QComboBox, QFileDialog, QScrollArea, QFrame
 )
-from PySide6.QtCore import Qt, Signal, QObject, QTimer, QSettings, QThread
-from PySide6.QtGui import QTextCursor, QIcon, QKeyEvent, QFont, QFontDatabase, QPalette, QColor, QPixmap, QKeySequence
+from PySide6.QtCore import Qt, Signal, QObject, QTimer, QSettings, QThread, QBuffer, QIODevice
+from PySide6.QtGui import QTextCursor, QIcon, QKeyEvent, QFont, QFontDatabase, QPalette, QColor, QPixmap, QKeySequence, QShortcut
 
 class FeedbackResult(TypedDict):
     command_logs: str
@@ -228,11 +228,12 @@ class FeedbackTextEdit(QTextEdit):
                 if image and not image.isNull():
                     # 转换为字节数据
                     pixmap = QPixmap.fromImage(image)
-                    buffer = io.BytesIO()
+                    buffer = QBuffer()
+                    buffer.open(QIODevice.WriteOnly)
                     # 使用更安全的保存方法
                     success = pixmap.save(buffer, "PNG")
                     if success:
-                        image_bytes = buffer.getvalue()
+                        image_bytes = buffer.data().data()
                         buffer.close()
                         
                         # 发送信号通知有图片粘贴
@@ -314,10 +315,11 @@ class DragDropImageLabel(QLabel):
                 image = mime_data.imageData()
                 if image and not image.isNull():
                     pixmap = QPixmap.fromImage(image)
-                    buffer = io.BytesIO()
+                    buffer = QBuffer()
+                    buffer.open(QIODevice.WriteOnly)
                     success = pixmap.save(buffer, "PNG")
                     if success:
-                        image_bytes = buffer.getvalue()
+                        image_bytes = buffer.data().data()
                         buffer.close()
                         self.image_dropped.emit(image_bytes)
                         event.acceptProposedAction()
@@ -345,7 +347,7 @@ class DragDropImageLabel(QLabel):
         
     def keyPressEvent(self, event):
         """处理键盘事件，特别是Ctrl+V"""
-        if event.matches(QKeyEvent.Paste):
+        if event.matches(QKeySequence.Paste):
             clipboard = QApplication.clipboard()
             mime_data = clipboard.mimeData()
             
@@ -354,10 +356,11 @@ class DragDropImageLabel(QLabel):
                     image = mime_data.imageData()
                     if image and not image.isNull():
                         pixmap = QPixmap.fromImage(image)
-                        buffer = io.BytesIO()
+                        buffer = QBuffer()
+                        buffer.open(QIODevice.WriteOnly)
                         success = pixmap.save(buffer, "PNG")
                         if success:
-                            image_bytes = buffer.getvalue()
+                            image_bytes = buffer.data().data()
                             buffer.close()
                             self.image_dropped.emit(image_bytes)
                             return
@@ -534,10 +537,11 @@ class FeedbackUI(QMainWindow):
                 image = mime_data.imageData()
                 if image and not image.isNull():
                     pixmap = QPixmap.fromImage(image)
-                    buffer = io.BytesIO()
+                    buffer = QBuffer()
+                    buffer.open(QIODevice.WriteOnly)
                     success = pixmap.save(buffer, "PNG")
                     if success:
-                        image_bytes = buffer.getvalue()
+                        image_bytes = buffer.data().data()
                         buffer.close()
                         self._handle_image_paste(image_bytes)
                         print("全局图片粘贴成功！")  # 调试信息

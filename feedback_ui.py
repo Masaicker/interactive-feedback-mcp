@@ -1085,11 +1085,10 @@ class FeedbackUI(QMainWindow):
 
     def _submit_feedback(self):
         feedback_content = self.feedback_text.toPlainText().strip()
-        # 在反馈内容末尾自动添加提醒文字
+        # 只有在用户提供了实际反馈内容时才添加提醒文字
         if feedback_content:
             feedback_content += "\n执行完前面的内容后，请记得调用interactive_feedback。"
-        else:
-            feedback_content = "执行完前面的内容后，请记得调用interactive_feedback。"
+        # 如果用户提交空反馈，说明不需要继续调用，不添加提醒文字
         
         self.feedback_result = FeedbackResult(
             logs="".join(self.log_buffer),
@@ -1136,6 +1135,7 @@ class FeedbackUI(QMainWindow):
             kill_tree(self.process)
 
         if not self.feedback_result:
+            # 用户直接关闭窗口，返回空反馈（不添加提醒文字）
             return FeedbackResult(logs="".join(self.log_buffer), interactive_feedback="")
 
         return self.feedback_result
